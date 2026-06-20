@@ -112,6 +112,16 @@ describe('SHARED_PROVIDER_BY_ID_OR_ALIAS', () => {
     }
   });
 
+  it('resolves AeroLink aliases to the canonical provider entry', () => {
+    for (const name of ['aerolink', 'aero-link', 'Aero Link', 'aerolinklat']) {
+      const normalized = normalizeProviderName(name);
+      const entry =
+        SHARED_PROVIDER_BY_ID_OR_ALIAS.get(normalized) ??
+        SHARED_PROVIDER_BY_ID_OR_ALIAS.get(name.toLowerCase());
+      expect(entry?.id).toBe('aerolink');
+    }
+  });
+
   it('returns undefined for unknown names', () => {
     expect(SHARED_PROVIDER_BY_ID_OR_ALIAS.get('unknownprovider')).toBeUndefined();
   });
@@ -180,6 +190,25 @@ describe('SHARED_PROVIDER_BY_ID', () => {
     expect(xiaomi!.keyPrefix).toBe('sk-');
     expect(xiaomi!.minKeyLength).toBe(50);
     expect(xiaomi!.keyPlaceholder).toBe('sk-xxxxx');
+  });
+
+  it('aerolink exposes the Anthropic-compatible API-key provider metadata', () => {
+    const aerolink = SHARED_PROVIDER_BY_ID.get('aerolink');
+    expect(aerolink).toBeDefined();
+    expect(aerolink!.displayName).toBe('AeroLink');
+    // AeroLink is a third-party Anthropic-compatible proxy — we must NOT
+    // attribute OpenRouter `aerolink/*` models to it because AeroLink
+    // does not publish through OpenRouter.
+    expect(aerolink!.openRouterPrefixes).toEqual([]);
+    // AeroLink keys are not prefix-validated client-side. Real dashboard
+    // keys are `aero_live_<48 alphanumerics>` (≈ 58 chars, verified from
+    // `aero_live_47VwELAhq9zKdsxv9OIbkC_ssuLD2sxDv50XbbD8s4c`), but
+    // historical / partner-issued keys may diverge — the upstream is
+    // the source of truth and rejects bad keys with a real auth error.
+    // We still enforce a minimum length to catch truncated paste.
+    expect(aerolink!.keyPrefix).toBe('');
+    expect(aerolink!.minKeyLength).toBe(50);
+    expect(aerolink!.keyPlaceholder).toBe('aero_live_...');
   });
 });
 

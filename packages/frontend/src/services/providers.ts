@@ -203,6 +203,11 @@ const PROVIDER_UI: Record<string, ProviderUIOverlay> = {
     subscriptionRequirementNote: 'Requires Command Code Pro or higher.',
     models: [],
   },
+  aerolink: {
+    initial: 'Ae',
+    subtitle: 'Claude via AeroLink',
+    models: [],
+  },
   gemini: {
     initial: 'G',
     subtitle: 'Gemini 2.5, Gemini 2.0 Flash',
@@ -405,6 +410,7 @@ export function buildProviderDef(shared: SharedProviderEntry): ProviderDef {
 // Preserve previous ordering (alphabetical-ish by display name) so UI tests
 // that index into PROVIDERS don't shift.
 const PROVIDER_ORDER = [
+  'aerolink',
   'qwen',
   'anthropic',
   'bedrock',

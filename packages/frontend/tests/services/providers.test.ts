@@ -174,6 +174,35 @@ describe('validateApiKey', () => {
     });
     expect(validateApiKey(nvidia, 'x'.repeat(20))).toEqual({ valid: true });
   });
+
+  it('accepts AeroLink keys of any prefix (length-only validation)', () => {
+    const aero = getProvider('aerolink')!;
+    expect(aero.name).toBe('AeroLink');
+    // AeroLink is intentionally lenient: no prefix enforcement, since
+    // historical / partner-issued keys may diverge from the dashboard
+    // shape. Length-only catches truncated paste.
+    expect(aero.keyPrefix).toBe('');
+    expect(aero.keyPlaceholder).toBe('aero_live_...');
+    expect(aero.minKeyLength).toBe(50);
+
+    // Real AeroLink key from the dashboard →
+    // `aero_live_<48 alphanumerics>` (≈ 58 chars, verified shape).
+    const realKey = 'aero_live_47VwELAhq9zKdsxv9OIbkC_ssuLD2sxDv50XbbD8s4c';
+    expect(realKey.length).toBeGreaterThanOrEqual(aero.minKeyLength);
+    expect(validateApiKey(aero, realKey)).toEqual({ valid: true });
+
+    // Older / partner-issued keys that don't match the current prefix
+    // are still accepted — that's the whole point of removing the
+    // prefix check.
+    expect(validateApiKey(aero, `sk-${'a'.repeat(60)}`)).toEqual({ valid: true });
+    expect(validateApiKey(aero, `sk-ant-${'a'.repeat(60)}`)).toEqual({ valid: true });
+
+    // Truncated paste is still rejected.
+    expect(validateApiKey(aero, 'aero_live_abc')).toEqual({
+      valid: false,
+      error: 'Key is too short (minimum 50 characters)',
+    });
+  });
 });
 
 /* ── validateSubscriptionKey ────────────────────── */

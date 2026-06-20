@@ -18,6 +18,7 @@ import {
 } from '../routing/xiaomi-region';
 import { getZaiCodingPlanBaseUrl, normalizeZaiCodingPlanBaseUrl } from '../routing/zai-region';
 import { OpencodeGoCatalogService } from './opencode-go-catalog.service';
+import { buildAeroLinkModels } from './aerolink-models';
 import {
   buildKiroHeaders,
   KIRO_BASE_URL,
@@ -41,6 +42,7 @@ const KILO_GATEWAY_BASE = 'https://api.kilo.ai/api/gateway';
 const FIREWORKS_MODELS_URL = 'https://api.fireworks.ai/v1/accounts/fireworks/models';
 const FIREWORKS_MODELS_PAGE_SIZE = 200;
 const FIREWORKS_MODELS_MAX_PAGES = 20;
+const AEROLINK_MODELS_URL = 'https://capi.aerolink.lat/v1/models';
 
 /* ── Generic parser factory ── */
 
@@ -104,6 +106,11 @@ interface OpenAIModelEntry {
   supported_endpoints?: unknown;
 }
 
+interface AeroLinkModelEntry extends OpenAIModelEntry {
+  /** AeroLink uses the plural-with-`s` field, unlike most OpenAI-compatible APIs. */
+  supported_endpoint_types?: unknown;
+}
+
 interface CommandCodeModelEntry extends OpenAIModelEntry {
   name?: string;
   context_length?: number;
@@ -114,6 +121,22 @@ const parseOpenAI = createModelParser<OpenAIModelEntry>({
   filter: (entry) => typeof entry.id === 'string' && entry.id.length > 0,
   getId: (entry) => entry.id,
   getDisplayName: (_entry, id) => id,
+});
+
+// AeroLink's /v1/models returns the OpenAI shape but with two quirks:
+//   1. The endpoint-type field is `supported_endpoint_types` (plural-with-s)
+//      instead of `supported_endpoints`.
+//   2. No pricing or context-window data — those come from the docs.
+// We pin the context window to 200K (Anthropic's standard) and flag every
+// model as code-capable since they're all Claude variants.
+const parseAeroLink = createModelParser<AeroLinkModelEntry>({
+  arrayKey: 'data',
+  filter: (entry) => typeof entry.id === 'string' && entry.id.length > 0,
+  getId: (entry) => entry.id,
+  getDisplayName: (_entry, id) => id,
+  contextWindow: 200_000,
+  capabilityCode: true,
+  supportedEndpoints: (entry) => getStringArray(entry.supported_endpoint_types),
 });
 
 const parseCommandCode = createModelParser<CommandCodeModelEntry>({
@@ -549,6 +572,18 @@ export const PROVIDER_CONFIGS: Record<string, FetcherConfig> = {
     buildHeaders: bearerHeaders,
     parse: parseBytePlusCodingPlan,
   },
+  // AeroLink's /v1/models uses Anthropic-compatible auth (x-api-key +
+  // anthropic-version), so we cannot use bearerHeaders here. The Content-Type
+  // header is required because AeroLink rejects requests without it.
+  aerolink: {
+    endpoint: AEROLINK_MODELS_URL,
+    buildHeaders: (apiKey: string) => ({
+      'x-api-key': apiKey,
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    }),
+    parse: parseAeroLink,
+  },
   commandcode: {
     endpoint: COMMAND_CODE_MODELS_URL,
     buildHeaders: bearerHeaders,
@@ -799,16 +834,36 @@ export class ProviderModelFetcherService {
         this.logger.warn(
           `Provider ${providerId} returned ${res.status} from ${url.replace(apiKey, '***')}`,
         );
-        return [];
+        return this.fetchAeroLinkFallback(configKey);
       }
 
       const body = await res.json();
-      return filterNonChatModels(config.parse(body, providerId), configKey);
+      const parsed = filterNonChatModels(config.parse(body, providerId), configKey);
+      // AeroLink (and any future docs-pinned provider) falls back to a
+      // hand-curated catalog when the live /v1/models call succeeds but
+      // returns zero usable entries — e.g. an auth failure that still
+      // parses as an empty JSON object, or a transient upstream outage.
+      if (parsed.length === 0) {
+        const fallback = this.fetchAeroLinkFallback(configKey);
+        if (fallback.length > 0) return fallback;
+      }
+      return parsed;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Failed to fetch models from ${providerId}: ${message}`);
-      return [];
+      return this.fetchAeroLinkFallback(configKey);
     }
+  }
+
+  /**
+   * Returns the docs-pinned AeroLink catalog when the live `/v1/models`
+   * call cannot succeed (network error, auth rejection, or empty result).
+   * Returns `[]` for any other provider so the call is safe to use as a
+   * blanket fallback.
+   */
+  private fetchAeroLinkFallback(configKey: string): DiscoveredModel[] {
+    if (configKey !== 'aerolink') return [];
+    return buildAeroLinkModels();
   }
 
   private async fetchFireworksModels(

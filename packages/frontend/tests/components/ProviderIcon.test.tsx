@@ -60,6 +60,15 @@ describe('providerIcon', () => {
     expect(img!.getAttribute('height')).toBe('24');
   });
 
+  it('returns the AeroLink logo image for "aerolink"', () => {
+    const { container } = render(() => <div>{providerIcon('aerolink', 24)}</div>);
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    expect(img!.getAttribute('src')).toBe('/icons/aerolink.png');
+    expect(img!.getAttribute('width')).toBe('24');
+    expect(img!.getAttribute('height')).toBe('24');
+  });
+
   it('returns null for unknown provider', () => {
     const { container } = render(() => <div>{providerIcon('unknown-provider')}</div>);
     const svg = container.querySelector('svg');

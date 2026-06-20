@@ -57,6 +57,25 @@ export const SHARED_PROVIDERS: readonly SharedProviderEntry[] = [
     keyPlaceholder: 'sk-...',
   },
   {
+    id: 'aerolink',
+    displayName: 'AeroLink',
+    aliases: ['aero-link', 'aero link', 'aerolinklat'],
+    openRouterPrefixes: [],
+    requiresApiKey: true,
+    localOnly: false,
+    color: '#6E56CF',
+    // AeroLink's current dashboard-issued shape is
+    // `aero_live_<48 alphanumerics>` (≈ 58 chars total — verified from
+    // `aero_live_47VwELAhq9zKdsxv9OIbkC_ssuLD2sxDv50XbbD8s4c`), but
+    // historical and partner-issued keys may not match this prefix,
+    // so we don't enforce it on the client. Length-only validation
+    // catches obviously truncated paste; the upstream rejects bad
+    // keys with a real auth error if the user gets it wrong.
+    keyPrefix: '',
+    minKeyLength: 50,
+    keyPlaceholder: 'aero_live_...',
+  },
+  {
     id: 'anthropic',
     displayName: 'Anthropic',
     aliases: [],

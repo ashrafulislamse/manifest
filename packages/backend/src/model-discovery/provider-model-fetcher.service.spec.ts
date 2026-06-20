@@ -44,6 +44,7 @@ describe('ProviderModelFetcherService', () => {
       'ollama-cloud',
       'copilot',
       'opencode-zen',
+      'aerolink',
     ];
     for (const id of expected) {
       expect(PROVIDER_CONFIGS[id]).toBeDefined();
@@ -2141,6 +2142,136 @@ describe('ProviderModelFetcherService', () => {
       const result = await service.fetch('opencode-go', 'og-token', 'subscription');
       expect(result).toEqual([]);
       expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('aerolink provider', () => {
+    it('fetches the live AeroLink /v1/models catalog with Anthropic-compatible auth headers', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              id: 'claude-opus-4-8',
+              object: 'model',
+              owned_by: 'anthropic',
+              supported_endpoint_types: ['anthropic'],
+            },
+            {
+              id: 'claude-haiku-4-5-20251001',
+              object: 'model',
+              owned_by: 'anthropic',
+              supported_endpoint_types: ['anthropic'],
+            },
+            {
+              id: 'claude-fable-5',
+              object: 'model',
+              owned_by: 'anthropic',
+              supported_endpoint_types: ['anthropic'],
+            },
+          ],
+        }),
+      });
+
+      const result = await service.fetch('aerolink', 'sk-aerolink-test');
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://capi.aerolink.lat/v1/models',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-api-key': 'sk-aerolink-test',
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          }),
+        }),
+      );
+      expect(result.map((m) => m.id)).toEqual([
+        'claude-opus-4-8',
+        'claude-haiku-4-5-20251001',
+        'claude-fable-5',
+      ]);
+      expect(result[0]).toEqual(
+        expect.objectContaining({
+          id: 'claude-opus-4-8',
+          displayName: 'claude-opus-4-8',
+          provider: 'aerolink',
+          contextWindow: 200_000,
+          inputPricePerToken: null,
+          outputPricePerToken: null,
+          capabilityCode: true,
+          capabilityReasoning: false,
+          qualityScore: 3,
+          supportedEndpoints: ['anthropic'],
+        }),
+      );
+    });
+
+    it('falls back to the hand-curated catalog when /v1/models returns 401', async () => {
+      const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+      fetchSpy.mockResolvedValue({ ok: false, status: 401 });
+
+      const result = await service.fetch('aerolink', 'sk-bad-key');
+
+      // The pinned catalog must rebuild the rows so non-chat rows from the
+      // docs still surface even when the live API rejects the key.
+      expect(result).toHaveLength(6);
+      expect(result.find((m) => m.id === 'claude-opus-4-8')).toBeDefined();
+      expect(result.every((m) => m.provider === 'aerolink')).toBe(true);
+      warnSpy.mockRestore();
+    });
+
+    it('falls back to the hand-curated catalog when /v1/models throws a network error', async () => {
+      const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+      fetchSpy.mockRejectedValue(new Error('network failure'));
+
+      const result = await service.fetch('aerolink', 'sk-aerolink-test');
+
+      expect(result).toHaveLength(6);
+      expect(result.find((m) => m.id === 'claude-haiku-4-5-20251001')).toBeDefined();
+      warnSpy.mockRestore();
+    });
+
+    it('falls back to the hand-curated catalog when the live response parses to zero usable models', async () => {
+      const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [] }),
+      });
+
+      const result = await service.fetch('aerolink', 'sk-aerolink-test');
+
+      // Empty `data` array — fall back to the docs-pinned catalog rather
+      // than silently returning nothing to the user.
+      expect(result).toHaveLength(6);
+      warnSpy.mockRestore();
+    });
+
+    it('returns a fresh array on each fallback call (no shared mutable state)', async () => {
+      const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+      fetchSpy.mockResolvedValue({ ok: false, status: 500 });
+
+      const first = await service.fetch('aerolink', 'sk-aerolink-test');
+      first[0].displayName = 'mutated';
+
+      const second = await service.fetch('aerolink', 'sk-aerolink-test');
+
+      // A shared array would let the second call observe the mutation;
+      // the fallback must rebuild the rows every time.
+      expect(second[0].displayName).not.toBe('mutated');
+      warnSpy.mockRestore();
+    });
+
+    it('does not invoke the AeroLink fallback for non-AeroLink providers', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [{ id: 'gpt-4o' }] }),
+      });
+
+      const result = await service.fetch('openai', 'sk-test');
+
+      // Sanity check: a non-AeroLink provider that returns one model
+      // must get exactly one model back, not the AeroLink fallback.
+      expect(result.map((m) => m.id)).toEqual(['gpt-4o']);
     });
   });
 

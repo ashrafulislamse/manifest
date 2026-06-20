@@ -52,6 +52,9 @@ describe('inferProviderFromModel', () => {
     ['opencode-zen/qwen3.6-plus', 'opencode-zen'],
     ['opencode-zen/claude-opus-4-7', 'opencode-zen'],
     ['opencode-zen/gpt-5.5', 'opencode-zen'],
+    ['aerolink/claude-opus-4-8', 'aerolink'],
+    ['aerolink/claude-sonnet-4-6', 'aerolink'],
+    ['aerolink/claude-haiku-4-5-20251001', 'aerolink'],
     ['llamacpp/Qwen3.5-9B-Q4_K_M.gguf', 'llamacpp'],
     ['llamacpp/mistral-7b-instruct-v0.3.Q4_K_M.gguf', 'llamacpp'],
     ['openrouter/auto', 'openrouter'],
@@ -91,6 +94,7 @@ describe('underlyingGatewayModel', () => {
     expect(underlyingGatewayModel('opencode-go/deepseek-v4-pro')).toBe('deepseek-v4-pro');
     expect(underlyingGatewayModel('opencode-go/kimi-k2.6')).toBe('kimi-k2.6');
     expect(underlyingGatewayModel('opencode-zen/qwen3.6-plus')).toBe('qwen3.6-plus');
+    expect(underlyingGatewayModel('aerolink/claude-opus-4-8')).toBe('claude-opus-4-8');
   });
 
   it('returns null for non-gateway model ids', () => {
@@ -119,6 +123,21 @@ describe('resolveUnderlyingModelIdentity', () => {
     expect(resolveUnderlyingModelIdentity('opencode-go', 'opencode-go/mimo-v2.5')).toEqual({
       provider: 'xiaomi',
       model: 'mimo-v2.5',
+    });
+  });
+
+  it('resolves AeroLink Claude models back to Anthropic', () => {
+    // AeroLink is a third-party Anthropic-compatible proxy that fronts
+    // Claude credits. When telemetry records `aerolink/claude-opus-4-8`
+    // we want the underlying provenance provider (anthropic) so capability
+    // and pricing lookups attribute the model correctly.
+    expect(resolveUnderlyingModelIdentity('aerolink', 'aerolink/claude-opus-4-8')).toEqual({
+      provider: 'anthropic',
+      model: 'claude-opus-4-8',
+    });
+    expect(resolveUnderlyingModelIdentity('aerolink', 'aerolink/claude-haiku-4-5-20251001')).toEqual({
+      provider: 'anthropic',
+      model: 'claude-haiku-4-5-20251001',
     });
   });
 

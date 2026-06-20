@@ -115,6 +115,14 @@ describe('resolveEndpointKey', () => {
     expect(resolveEndpointKey('Xiaomi MiMo')).toBe('xiaomi');
   });
 
+  it('resolves AeroLink aliases to aerolink', () => {
+    expect(resolveEndpointKey('aerolink')).toBe('aerolink');
+    expect(resolveEndpointKey('AeroLink')).toBe('aerolink');
+    expect(resolveEndpointKey('aero-link')).toBe('aerolink');
+    expect(resolveEndpointKey('Aero Link')).toBe('aerolink');
+    expect(resolveEndpointKey('aerolinklat')).toBe('aerolink');
+  });
+
   it('resolves AWS Bedrock aliases to bedrock', () => {
     expect(resolveEndpointKey('aws-bedrock')).toBe('bedrock');
     expect(resolveEndpointKey('amazon-bedrock')).toBe('bedrock');
@@ -145,6 +153,7 @@ describe('resolveEndpointKey', () => {
     expect(known).toContain('copilot');
     expect(known).toContain('byteplus');
     expect(known).toContain('byteplus-anthropic');
+    expect(known).toContain('aerolink');
     expect(known).toContain('commandcode');
     expect(known).toContain('commandcode-anthropic');
     expect(known).toContain('fireworks');
@@ -290,6 +299,23 @@ describe('PROVIDER_ENDPOINTS', () => {
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
     });
+  });
+
+  it('aerolink uses the capi.aerolink.lat Anthropic-compatible endpoint', () => {
+    const ep = PROVIDER_ENDPOINTS['aerolink'];
+    expect(ep.baseUrl).toBe('https://capi.aerolink.lat');
+    expect(ep.format).toBe('anthropic');
+    expect(ep.buildPath('claude-opus-4-8')).toBe('/v1/messages');
+    expect(ep.skipSubscriptionIdentity).toBe(true);
+    // AeroLink's gateway mirrors Anthropic's x-api-key convention; do not
+    // attach the Claude-agent identity headers (this is a third-party
+    // gateway, not an Anthropic subscription).
+    expect(ep.buildHeaders('sk-aerolink-test')).toEqual({
+      'x-api-key': 'sk-aerolink-test',
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    });
+    expect(ep.buildHeaders('sk-aerolink-test')['Authorization']).toBeUndefined();
   });
 
   it('nvidia uses the hosted NIM OpenAI-compatible endpoint', () => {
@@ -672,6 +698,7 @@ describe('PROVIDER_ENDPOINTS', () => {
       'copilot-responses',
       'commandcode-anthropic',
       'byteplus-anthropic',
+      'aerolink',
       'minimax-subscription',
       'qwen-subscription-responses',
       'opencode-go-anthropic',

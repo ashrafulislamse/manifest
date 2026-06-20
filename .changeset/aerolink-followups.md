@@ -1,0 +1,9 @@
+---
+'manifest': minor
+---
+
+Fix AeroLink integration on the routing page and migrate legacy Custom AeroLink tiles to the first-class provider.
+
+- **Branded icon everywhere**: previously the AeroLink tile showed a generic purple "A" badge because `providerIcon()` had no `case 'aerolink':` even though the AeroLink asset was already in the icon set. The new case in `ProviderIcon.tsx` propagates the real `.png` (the official pink `ae` mark) to all 20 render sites — `ProviderConnectionsPage` (Supported list), `ProviderDetailView` (connect modal), `ModelPrices`, `ModelPickerModal`, `Playground`, `ConnectionDetail`, `AgentProviders`, `GlobalOverview`, `Header`, `HeaderTierCard`, `FallbackList`, `CostByModelTable`, `ModelPricesFilterBar`, and `LocalServerDetailView`.
+- **Lenient AeroLink key validation**: the placeholder still hints at the dashboard-issued `aero_live_…` shape, but the validator no longer rejects keys that don't match the prefix. Real AeroLink keys (`aero_live_<48 alphanumerics>`, ≈ 58 chars — verified from `aero_live_47VwELAhq9zKdsxv9OIbkC_ssuLD2sxDv50XbbD8s4c`) pass, but so do historical / partner-issued keys that diverge from the current prefix. `minKeyLength` stays at 50 to catch obviously truncated paste; the upstream rejects bad keys with a real auth error if the user gets it wrong.
+- **Custom-provider migration** (`1792900000000-MigrateCustomAerolinkToFirstClass`): on the first backend boot after upgrade, every Custom AeroLink tile (matched by name or `aerolink.lat` / `capi.aerolink` base URL) is folded into the new first-class AeroLink provider — the encrypted API key, label, priority, and per-agent enable flags are carried forward to a `tenant_providers` row with `provider='aerolink'`, the Custom rows are deleted, and the `agent_enabled_providers` junction is rewired to the new id. The migration is one-way and idempotent (guarded by `backfill_state`); tenants that already use the first-class tile are left alone.

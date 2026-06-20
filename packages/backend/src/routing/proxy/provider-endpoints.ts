@@ -176,6 +176,22 @@ export const PROVIDER_ENDPOINTS: Record<string, ProviderEndpoint> = {
     format: 'anthropic',
     skipSubscriptionIdentity: true,
   },
+  // AeroLink (https://aerolink.lat) is an Anthropic-compatible proxy that
+  // fronts third-party Claude credits. We use the `x-api-key` header instead
+  // of `Authorization: Bearer` because AeroLink's gateway mirrors Anthropic's
+  // own auth header convention (the OpenAI-compatible Anthropic path on
+  // capi.aerolink.lat treats x-api-key as authoritative).
+  //
+  // The base URL is also used by the model fetcher as the `provider.litellm`
+  // host hint for the AeroLink fallback list — keep it in sync with
+  // packages/backend/src/model-discovery/aerolink-models.ts.
+  aerolink: {
+    baseUrl: 'https://capi.aerolink.lat',
+    buildHeaders: anthropicApiKeyHeaders,
+    buildPath: () => '/v1/messages',
+    format: 'anthropic',
+    skipSubscriptionIdentity: true,
+  },
   commandcode: {
     baseUrl: COMMAND_CODE_PROVIDER_BASE,
     buildHeaders: openaiHeaders,
