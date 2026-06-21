@@ -21,6 +21,7 @@ import { SpecificityService } from './specificity.service';
 import { SpecificityPenaltyService } from './specificity-penalty.service';
 import { AgentModelParamsService } from './agent-model-params.service';
 import { ProviderParamSpecService } from './provider-param-spec.service';
+import { KeyHealthService } from './key-health.service';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { ProviderParamSpecService } from './provider-param-spec.service';
     SpecificityPenaltyService,
     AgentModelParamsService,
     ProviderParamSpecService,
+    KeyHealthService,
   ],
   exports: [
     TypeOrmModule,
@@ -62,6 +64,7 @@ import { ProviderParamSpecService } from './provider-param-spec.service';
     SpecificityPenaltyService,
     AgentModelParamsService,
     ProviderParamSpecService,
+    KeyHealthService,
   ],
 })
 export class RoutingCoreModule {}

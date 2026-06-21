@@ -128,6 +128,7 @@ import { TenantScopedConfigs1792600000000 } from './migrations/1792600000000-Ten
 import { DropUserScopeFromRouting1792700000000 } from './migrations/1792700000000-DropUserScopeFromRouting';
 import { AddBackfillStateTable1792800000000 } from './migrations/1792800000000-AddBackfillStateTable';
 import { MigrateCustomAerolinkToFirstClass1792900000000 } from './migrations/1792900000000-MigrateCustomAerolinkToFirstClass';
+import { AddTenantProviderKeyHealth1793000000000 } from './migrations/1793000000000-AddTenantProviderKeyHealth';
 
 const entities = [
   AgentMessage,
@@ -256,6 +257,7 @@ const migrations = [
   DropUserScopeFromRouting1792700000000,
   AddBackfillStateTable1792800000000,
   MigrateCustomAerolinkToFirstClass1792900000000,
+  AddTenantProviderKeyHealth1793000000000,
 ];
 
 @Module({

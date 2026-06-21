@@ -10,6 +10,8 @@ export interface TenantProviderConnection {
   models_fetched_at: string | null;
   cached_model_count: number;
   is_active: boolean;
+  cooldown_until?: string | null;
+  consecutive_failures?: number;
 }
 
 /**

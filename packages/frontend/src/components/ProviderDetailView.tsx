@@ -48,27 +48,48 @@ export interface ProviderDetailViewProps {
 const ProviderDetailView: Component<ProviderDetailViewProps> = (props) => {
   const provDef = PROVIDERS.find((p) => p.id === props.provId)!;
 
+  /**
+   * Resolves the active row for a given auth type. When multiple rows
+   * share a (provider, auth_type) — e.g. a multi-key chain — the first
+   * one returned by `find` is whatever happens to come back from the
+   * server. We pin the lookup to the **active** row so the connected
+   * flag reflects the real "is the user actually able to call this
+   * provider" question, not "does ANY row exist".
+   *
+   * Caller that needs the full chain (rename, delete, list view) uses
+   * `activeKeys()` instead, which already filters by `is_active`.
+   */
   const getProviderByAuth = (authType: AuthType) =>
-    props.providers.find((p) => p.provider === props.provId && p.auth_type === authType);
+    props.providers.find(
+      (p) =>
+        p.provider === props.provId && p.auth_type === authType && p.is_active && p.has_api_key,
+    );
 
-  const isConnectedApiKey = (): boolean => {
-    const p = getProviderByAuth('api_key');
-    return !!p && p.is_active && p.has_api_key;
-  };
+  const isConnectedApiKey = (): boolean => !!getProviderByAuth('api_key');
 
   const isSubscriptionConnected = (): boolean => {
-    const p = getProviderByAuth('subscription');
-    return !!p && p.is_active;
+    const p = props.providers.find(
+      (p) => p.provider === props.provId && p.auth_type === 'subscription' && p.is_active,
+    );
+    return !!p;
   };
 
   const isSubscriptionWithToken = (): boolean => {
-    const p = getProviderByAuth('subscription');
-    return !!p && p.is_active && p.has_api_key;
+    const p = props.providers.find(
+      (p) =>
+        p.provider === props.provId &&
+        p.auth_type === 'subscription' &&
+        p.is_active &&
+        p.has_api_key,
+    );
+    return !!p;
   };
 
   const isNoKeyConnected = (): boolean => {
-    const p = getProviderByAuth('api_key');
-    return !!p && p.is_active && !!provDef.noKeyRequired;
+    const p = props.providers.find(
+      (p) => p.provider === props.provId && p.auth_type === 'api_key' && p.is_active,
+    );
+    return !!p && !!provDef.noKeyRequired;
   };
 
   const getKeyPrefixDisplay = (authType: AuthType): string => {

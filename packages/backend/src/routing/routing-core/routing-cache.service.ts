@@ -20,6 +20,13 @@ export interface CachedProviderKey {
   priority: number;
   apiKey: string | null;
   region: string | null;
+  /**
+   * Cooldown expiry copied from `tenant_providers.cooldown_until`. The cache
+   * is short-lived (2min TTL) so the value can become stale — callers that
+   * need a hard guarantee should re-read from the DB.
+   */
+  cooldownUntil: string | null;
+  consecutiveFailures: number;
 }
 
 function getOrExpire<T>(map: Map<string, CachedEntry<T>>, key: string): T | undefined {
@@ -188,8 +195,17 @@ export class RoutingCacheService {
   invalidateTenant(tenantId: string): void {
     this.providers.delete(tenantId);
     this.customProviders.delete(tenantId);
-    // Clears both tenant-global and agent-scoped key chains: every entry for
-    // this tenant starts with the same NUL-delimited tenantId segment.
+    this.invalidateTenantProviderKeys(tenantId);
+  }
+
+  /**
+   * Drop only the provider-key cache entries belonging to a tenant. Used by
+   * KeyHealthService after a key health change — the rest of the tenant cache
+   * (provider list, custom providers) is still valid and shouldn't be
+   * unnecessarily churned. The provider-key entries start with the
+   * NUL-delimited tenantId segment (see `providerKeysKey`).
+   */
+  invalidateTenantProviderKeys(tenantId: string): void {
     const prefix = `${tenantId}\u0000`;
     const toDelete = [...this.providerKeys.keys()].filter((k) => k.startsWith(prefix));
     for (const k of toDelete) this.providerKeys.delete(k);

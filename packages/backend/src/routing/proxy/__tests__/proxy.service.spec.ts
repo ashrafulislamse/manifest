@@ -70,7 +70,11 @@ describe('ProxyService — orchestration', () => {
   let providerKeyService: jest.Mocked<
     Pick<
       ProviderKeyService,
-      'getProviderApiKey' | 'getProviderRegion' | 'getProviderKeyId' | 'selectProviderKey'
+      | 'getProviderApiKey'
+      | 'getProviderRegion'
+      | 'getProviderKeyId'
+      | 'selectProviderKey'
+      | 'selectNextEligibleKey'
     >
   >;
   let tierService: jest.Mocked<Pick<TierService, 'getTiers'>>;
@@ -118,6 +122,10 @@ describe('ProxyService — orchestration', () => {
         label: 'Default',
         priority: 0,
       }),
+      // In-request key rotation: by default the tests run a single key
+      // per route, so this is a no-op. Tests that exercise the rotation
+      // path override it.
+      selectNextEligibleKey: jest.fn().mockResolvedValue(null),
     };
     tierService = { getTiers: jest.fn().mockResolvedValue([]) };
     openaiOauth = { unwrapToken: jest.fn().mockResolvedValue(null) };
@@ -457,6 +465,8 @@ describe('ProxyService — orchestration', () => {
         region: null,
         label: 'Work',
         priority: 0,
+        cooldownUntil: null,
+        consecutiveFailures: 0,
       });
       providerKeyService.getProviderApiKey.mockResolvedValue(rawBlob);
       openaiOauth.unwrapToken.mockResolvedValue('cached-access');
@@ -509,6 +519,8 @@ describe('ProxyService — orchestration', () => {
         region: null,
         label: 'Work',
         priority: 0,
+        cooldownUntil: null,
+        consecutiveFailures: 0,
       });
       providerKeyService.getProviderApiKey.mockResolvedValue(refreshedBlob);
       openaiOauth.unwrapToken.mockResolvedValue('fresh-access');

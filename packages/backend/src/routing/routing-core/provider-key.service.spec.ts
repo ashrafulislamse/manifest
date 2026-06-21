@@ -25,6 +25,10 @@ describe('ProviderKeyService — selection projections', () => {
       {} as never, // discoveryService
       {} as never, // routingCache
       {} as never, // providerService
+      {
+        isKeyCoolingDown: (row: { cooldown_until?: string | null }, now: Date = new Date()) =>
+          !!row.cooldown_until && new Date(row.cooldown_until).getTime() > now.getTime(),
+      } as never,
       null, // accessRepo (optional)
     );
   });
@@ -35,6 +39,8 @@ describe('ProviderKeyService — selection projections', () => {
     priority: 0,
     apiKey: 'sk',
     region: null,
+    cooldownUntil: null,
+    consecutiveFailures: 0,
     ...over,
   });
 
@@ -69,6 +75,104 @@ describe('ProviderKeyService — selection projections', () => {
         .mockResolvedValue([key({ id: 'up-default' }), key({ id: 'up-2', label: 'Two' })]);
       const sel = await svc.selectProviderKey('u', 'openai', 'api_key');
       expect(sel?.id).toBe('up-default');
+    });
+
+    it('skips a cooling-down key when no label is given', async () => {
+      const future = new Date(Date.now() + 60_000);
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([
+          key({ id: 'up-default', cooldownUntil: future.toISOString() }),
+          key({ id: 'up-work', label: 'Work' }),
+        ]);
+      const sel = await svc.selectProviderKey('u', 'openai', 'api_key');
+      expect(sel?.id).toBe('up-work');
+    });
+
+    it('still honors an explicit label pin even when that key is cooling down', async () => {
+      // The user (or a routing pin) asked for "Work" by name — silently
+      // swapping in a different key would mask misconfigured pins as
+      // confusing upstream errors.
+      const future = new Date(Date.now() + 60_000);
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([
+          key({ id: 'up-default' }),
+          key({ id: 'up-work', label: 'Work', cooldownUntil: future.toISOString() }),
+        ]);
+      const sel = await svc.selectProviderKey('u', 'openai', 'api_key', 'Work');
+      expect(sel?.id).toBe('up-work');
+    });
+
+    it('falls back to the first key when every key is cooling down', async () => {
+      // Better to surface the real upstream error than a synthetic "no key".
+      const future = new Date(Date.now() + 60_000);
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([
+          key({ id: 'up-default', cooldownUntil: future.toISOString() }),
+          key({ id: 'up-work', label: 'Work', cooldownUntil: future.toISOString() }),
+        ]);
+      const sel = await svc.selectProviderKey('u', 'openai', 'api_key');
+      expect(sel?.id).toBe('up-default');
+    });
+
+    it('treats a past cooldown_until as eligible', async () => {
+      // The cooldown clock runs out → the key is back in rotation.
+      const past = new Date(Date.now() - 60_000);
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([
+          key({ id: 'up-default', cooldownUntil: past.toISOString() }),
+          key({ id: 'up-work', label: 'Work' }),
+        ]);
+      const sel = await svc.selectProviderKey('u', 'openai', 'api_key');
+      expect(sel?.id).toBe('up-default');
+    });
+  });
+
+  describe('selectNextEligibleKey', () => {
+    // In-request rotation: the proxy's key loop calls this to skip from the
+    // just-failed key to the next healthy one. The exclude + cooldown
+    // filters are the whole point of the helper.
+
+    it('returns the next key in priority order, skipping the just-failed one', async () => {
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([key({ id: 'up-default' }), key({ id: 'up-work', label: 'Work' })]);
+      const next = await svc.selectNextEligibleKey('u', 'openai', 'api_key', 'up-default');
+      expect(next?.id).toBe('up-work');
+    });
+
+    it('skips a cooling-down key in the chain', async () => {
+      const future = new Date(Date.now() + 60_000);
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([
+          key({ id: 'up-default' }),
+          key({ id: 'up-broken', label: 'Broken', cooldownUntil: future.toISOString() }),
+          key({ id: 'up-work', label: 'Work' }),
+        ]);
+      const next = await svc.selectNextEligibleKey('u', 'openai', 'api_key', 'up-default');
+      expect(next?.id).toBe('up-work');
+    });
+
+    it('returns null when every other key is cooling down or excluded', async () => {
+      const future = new Date(Date.now() + 60_000);
+      jest
+        .spyOn(svc, 'getProviderKeys')
+        .mockResolvedValue([
+          key({ id: 'up-default' }),
+          key({ id: 'up-broken', cooldownUntil: future.toISOString() }),
+        ]);
+      const next = await svc.selectNextEligibleKey('u', 'openai', 'api_key', 'up-default');
+      expect(next).toBeNull();
+    });
+
+    it('returns null when no keys resolve at all', async () => {
+      jest.spyOn(svc, 'getProviderKeys').mockResolvedValue([]);
+      const next = await svc.selectNextEligibleKey('u', 'openai', 'api_key', 'up-default');
+      expect(next).toBeNull();
     });
   });
 
@@ -179,6 +283,7 @@ describe('ProviderKeyService — filterProvidersForAgent (per-agent visibility)'
       {} as never, // discoveryService
       routingCache as never, // routingCache
       {} as never, // providerService
+      { isKeyCoolingDown: () => false } as never, // keyHealth
       enabledRepo as never, // enabledProviderRepo
     );
     return { svc, enabledFind, setProviderKeys };

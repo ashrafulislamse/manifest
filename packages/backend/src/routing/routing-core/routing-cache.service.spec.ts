@@ -21,6 +21,8 @@ const providerKey = (label: string, apiKey: string | null = 'sk-test'): CachedPr
   priority: 0,
   apiKey,
   region: null,
+  cooldownUntil: null,
+  consecutiveFailures: 0,
 });
 
 describe('RoutingCacheService', () => {
@@ -171,6 +173,49 @@ describe('RoutingCacheService', () => {
 
       // Agent tiers are untouched
       expect(svc.getTiers('agent-x')).not.toBeNull();
+    });
+  });
+
+  describe('invalidateTenantProviderKeys', () => {
+    it('drops every providerKey entry for the tenant across providers / authTypes / agents, leaving providers + customProviders + tiers alone', () => {
+      // Provider list under the same tenant must survive.
+      svc.setProviders('u1', [provider('p1')]);
+      svc.setCustomProviders('u1', [customProvider('c1')]);
+      // Tier cache (agent-scoped, not tenant-scoped) must survive too.
+      svc.setTiers('agent-x', [tier('t1')]);
+
+      // A spread of key-chain entries for tenant u1.
+      svc.setProviderKeys('u1', 'openai', [providerKey('Default', 'k-global')]);
+      svc.setProviderKeys(
+        'u1',
+        'openai',
+        [providerKey('Default', 'k-scoped')],
+        undefined,
+        'agent-x',
+      );
+      svc.setProviderKeys('u1', 'anthropic', [providerKey('Default', 'k-sub')], 'subscription');
+
+      // Other tenant's chain must not be touched.
+      svc.setProviderKeys('u2', 'openai', [providerKey('Default', 'k-other')]);
+
+      svc.invalidateTenantProviderKeys('u1');
+
+      // All u1 key chains dropped
+      expect(svc.getProviderKeys('u1', 'openai')).toBeUndefined();
+      expect(svc.getProviderKeys('u1', 'openai', undefined, 'agent-x')).toBeUndefined();
+      expect(svc.getProviderKeys('u1', 'anthropic', 'subscription')).toBeUndefined();
+
+      // Other caches untouched
+      expect(svc.getProviders('u1')).not.toBeNull();
+      expect(svc.getCustomProviders('u1')).not.toBeNull();
+      expect(svc.getTiers('agent-x')).not.toBeNull();
+      expect(svc.getProviderKeys('u2', 'openai')?.[0].apiKey).toBe('k-other');
+    });
+
+    it('is a no-op when the tenant has no cached provider keys', () => {
+      svc.setProviders('u1', [provider('p1')]);
+      expect(() => svc.invalidateTenantProviderKeys('u1')).not.toThrow();
+      expect(svc.getProviders('u1')).not.toBeNull();
     });
   });
 

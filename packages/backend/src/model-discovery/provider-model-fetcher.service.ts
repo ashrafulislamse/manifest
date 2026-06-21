@@ -18,7 +18,7 @@ import {
 } from '../routing/xiaomi-region';
 import { getZaiCodingPlanBaseUrl, normalizeZaiCodingPlanBaseUrl } from '../routing/zai-region';
 import { OpencodeGoCatalogService } from './opencode-go-catalog.service';
-import { buildAeroLinkModels } from './aerolink-models';
+import { AEROLINK_PRICES, buildAeroLinkModels } from './aerolink-models';
 import {
   buildKiroHeaders,
   KIRO_BASE_URL,
@@ -52,8 +52,15 @@ interface ModelParserConfig<T> {
   getId: (entry: T) => string;
   getDisplayName: (entry: T, id: string) => string;
   contextWindow?: number | ((entry: T) => number);
-  inputPricePerToken?: number | null;
-  outputPricePerToken?: number | null;
+  /**
+   * Per-token USD price. A function lets providers whose live `/v1/models`
+   * response omits pricing look up rates from a hand-curated catalog keyed
+   * by the model id (e.g. AeroLink — see `AEROLINK_PRICES`). Returning
+   * `null` for an unknown id falls through to the global enrichment chain
+   * (models.dev → OpenRouter cache).
+   */
+  inputPricePerToken?: number | null | ((entry: T) => number | null);
+  outputPricePerToken?: number | null | ((entry: T) => number | null);
   capabilityCode?: boolean | ((entry: T) => boolean);
   supportedEndpoints?: (entry: T) => readonly string[] | undefined;
   qualityScore?: number;
@@ -77,8 +84,14 @@ function createModelParser<T>(
           displayName: config.getDisplayName(entry, id),
           provider,
           contextWindow: typeof ctxVal === 'function' ? ctxVal(entry) : ctxVal,
-          inputPricePerToken: config.inputPricePerToken ?? null,
-          outputPricePerToken: config.outputPricePerToken ?? null,
+          inputPricePerToken:
+            typeof config.inputPricePerToken === 'function'
+              ? config.inputPricePerToken(entry)
+              : (config.inputPricePerToken ?? null),
+          outputPricePerToken:
+            typeof config.outputPricePerToken === 'function'
+              ? config.outputPricePerToken(entry)
+              : (config.outputPricePerToken ?? null),
           capabilityReasoning: false,
           capabilityCode:
             typeof config.capabilityCode === 'function'
@@ -128,7 +141,12 @@ const parseOpenAI = createModelParser<OpenAIModelEntry>({
 //      instead of `supported_endpoints`.
 //   2. No pricing or context-window data — those come from the docs.
 // We pin the context window to 200K (Anthropic's standard) and flag every
-// model as code-capable since they're all Claude variants.
+// model as code-capable since they're all Claude variants. The price
+// callbacks read from the docs map (`AEROLINK_PRICES`, per-million-token
+// USD) and convert to per-token — the same shape `buildAeroLinkModels`
+// uses for the offline fallback. Models the docs don't cover yet fall
+// through to the global enrichment chain (models.dev → OpenRouter cache).
+const AEROLINK_PRICE_PER_MILLION = 1_000_000;
 const parseAeroLink = createModelParser<AeroLinkModelEntry>({
   arrayKey: 'data',
   filter: (entry) => typeof entry.id === 'string' && entry.id.length > 0,
@@ -136,6 +154,14 @@ const parseAeroLink = createModelParser<AeroLinkModelEntry>({
   getDisplayName: (_entry, id) => id,
   contextWindow: 200_000,
   capabilityCode: true,
+  inputPricePerToken: (entry) => {
+    const price = AEROLINK_PRICES[entry.id];
+    return price ? price.input / AEROLINK_PRICE_PER_MILLION : null;
+  },
+  outputPricePerToken: (entry) => {
+    const price = AEROLINK_PRICES[entry.id];
+    return price ? price.output / AEROLINK_PRICE_PER_MILLION : null;
+  },
   supportedEndpoints: (entry) => getStringArray(entry.supported_endpoint_types),
 });
 

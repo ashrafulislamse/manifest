@@ -23,7 +23,10 @@ describe('TenantProvidersController', () => {
       updated_at: '2026-01-01T00:00:00.000Z',
       cached_models: [{ id: 'gpt-4o' }] as never,
       models_fetched_at: '2026-01-01T00:00:00.000Z',
-    }) as TenantProvider;
+      last_failure_at: null,
+      consecutive_failures: 0,
+      cooldown_until: null,
+    }) as unknown as TenantProvider;
 
   it('lists multiple provider rows without deleting them', async () => {
     const providerRepo = {

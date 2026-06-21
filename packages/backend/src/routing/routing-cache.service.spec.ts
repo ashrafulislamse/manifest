@@ -11,6 +11,8 @@ const providerKey = (label: string, apiKey: string | null = 'sk-test'): CachedPr
   priority: 0,
   apiKey,
   region: null,
+  cooldownUntil: null,
+  consecutiveFailures: 0,
 });
 
 describe('RoutingCacheService', () => {

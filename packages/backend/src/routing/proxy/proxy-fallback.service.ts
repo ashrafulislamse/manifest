@@ -35,6 +35,13 @@ interface ForwardProviderOptions {
   providerKeyLabel?: string;
   agentId?: string;
   tenantId?: string;
+  /**
+   * tenant_providers.id for the row that owns `apiKey`. When set, the
+   * proxy-fallback layer records per-key health (cooldown / streak) here
+   * so subsequent `selectProviderKey` calls can skip exhausted keys.
+   * NULL for synthetic Ollama (no persisted row).
+   */
+  tenantProviderId?: string | null;
   resourceUrl?: string;
   providerRegion?: string | null;
   apiMode?: ProxyApiMode;
@@ -48,6 +55,7 @@ import {
   ProviderKeyService,
   SYNTHETIC_OLLAMA_PROVIDER_ID,
 } from '../routing-core/provider-key.service';
+import { KeyHealthService } from '../routing-core/key-health.service';
 import { CustomProvider } from '../../entities/custom-provider.entity';
 import { CustomProviderService } from '../custom-provider/custom-provider.service';
 import { resolveForwardEndpoint } from './forward-endpoint-resolver';
@@ -63,7 +71,7 @@ import { resolveEndpointKey } from './provider-endpoints';
 import { CopilotTokenService } from './copilot-token.service';
 import { ReasoningContentCache } from './reasoning-content-cache';
 import { buildProviderExtraHeaders } from './provider-hooks';
-import { shouldTriggerFallback } from './fallback-status-codes';
+import { shouldRotateOnKeyError, shouldTriggerFallback } from './fallback-status-codes';
 import { inferProviderFromModelName } from '../../common/utils/provider-aliases';
 import { normalizeAnthropicShortModelId } from '../../common/utils/anthropic-model-id';
 import {
@@ -106,6 +114,7 @@ export class ProxyFallbackService {
 
   constructor(
     private readonly providerKeyService: ProviderKeyService,
+    private readonly keyHealth: KeyHealthService,
     @InjectRepository(CustomProvider)
     private readonly customProviderRepo: Repository<CustomProvider>,
     private readonly openaiOauth: OpenaiOauthService,
@@ -263,96 +272,156 @@ export class ProxyFallbackService {
         providerKeyLabel = key.label;
       }
 
-      const resolvedCredentials = await resolveApiKey(
-        provider,
-        apiKey,
-        authType,
-        agentId,
-        tenantId,
-        this.openaiOauth,
-        this.minimaxOauth,
-        this.anthropicOauth,
-        this.geminiOauth,
-        this.kiroOauth,
-        this.xaiOauth,
-        providerKeyLabel,
-      );
-      if (resolvedCredentials.apiKey === null) {
-        this.logger.debug(
-          `Fallback ${i}: skipping model=${model} provider=${provider} (OAuth token unavailable)`,
+      // In-request key rotation: try the first eligible key, and if it
+      // fails with a rotation-trigger status, swap to the next eligible
+      // key in the same route before falling through to the next model
+      // fallback. AeroLink-style usage caps (e.g. $10/4h per key) make
+      // this essential — without it, the request fails on a single bad
+      // key even when healthy backups exist.
+      let currentKey = key;
+      let currentTenantProviderId = tenantProviderId;
+      let currentProviderKeyLabel = providerKeyLabel;
+      let currentProviderRegion = key.region;
+      let forward: ForwardResult | null = null;
+      let lastErrorBody: string | null = null;
+      let triedRotation = false;
+
+      while (true) {
+        const resolvedCredentials = await resolveApiKey(
+          provider,
+          currentKey.apiKey ?? apiKey,
+          authType,
+          agentId,
+          tenantId,
+          this.openaiOauth,
+          this.minimaxOauth,
+          this.anthropicOauth,
+          this.geminiOauth,
+          this.kiroOauth,
+          this.xaiOauth,
+          currentProviderKeyLabel,
         );
-        continue;
+        if (resolvedCredentials.apiKey === null) {
+          this.logger.debug(
+            `Fallback ${i}: key=${currentKey.label} provider=${provider} (OAuth token unavailable)`,
+          );
+          break;
+        }
+        let rawApiKey = currentKey.apiKey ?? apiKey;
+        if (authType === 'subscription' && isRefreshableOAuthCredential(currentKey.apiKey ?? '')) {
+          // Deliberate re-read: resolveApiKey may have refreshed + persisted a
+          // rotated OAuth blob (which also invalidates the key cache), so the
+          // freshest stored value is fetched for the 401-retry path.
+          rawApiKey =
+            (await this.providerKeyService.getProviderApiKey(
+              tenantId,
+              provider,
+              authType,
+              currentProviderKeyLabel,
+              agentId,
+            )) ?? rawApiKey;
+        }
+
+        this.logger.log(
+          triedRotation
+            ? `Fallback ${i}: retrying model=${model} provider=${provider} auth_type=${authType} key=${currentKey.label} (in-request rotation)`
+            : `Fallback ${i}: trying model=${model} provider=${provider} auth_type=${authType} key=${currentKey.label} (primary=${primaryModel})`,
+        );
+        triedRotation = true;
+
+        forward = await this.tryForwardToProvider({
+          provider,
+          apiKey: resolvedCredentials.apiKey,
+          model,
+          body,
+          chatBody,
+          stream,
+          sessionKey,
+          signal,
+          agentId,
+          tenantId,
+          rawApiKey,
+          providerKeyLabel: currentProviderKeyLabel,
+          authType,
+          apiMode,
+          resourceUrl: resolvedCredentials.resourceUrl,
+          providerRegion: currentProviderRegion,
+          signatureLookup,
+          thinkingLookup,
+          reasoningContentLookup,
+          paramMergeContext,
+          tenantProviderId: currentTenantProviderId,
+        });
+
+        if (forward.response.ok) {
+          const successKey = currentKey;
+          const successTenantProviderId = currentTenantProviderId;
+          return {
+            success: {
+              forward,
+              model,
+              provider,
+              fallbackIndex: i,
+              authType,
+              keyLabel: successTenantProviderId ? successKey.label : currentProviderKeyLabel,
+              tenantProviderId: successTenantProviderId,
+            },
+            failures,
+          };
+        }
+
+        // Pin to a specific key (route.keyLabel or explicit providerKeyLabel
+        // from the structured route): bail out of in-request rotation so
+        // the outer fallback chain can try the next model. The caller has
+        // asked for THIS key by name — silently swapping would mask pin
+        // misconfiguration as a successful retry.
+        if (route?.keyLabel || providerKeyLabel) {
+          lastErrorBody = await forward.response.text();
+          break;
+        }
+
+        // Only rotate for trigger statuses (401/403/408/409/429/5xx).
+        // Model-level errors (400, 404, 422) won't get better with a
+        // different key.
+        if (!shouldRotateOnKeyError(forward.response.status)) {
+          lastErrorBody = await forward.response.text();
+          break;
+        }
+
+        // Try the next eligible key in the chain. The just-failed key is
+        // excluded so we don't loop on the same row.
+        const next = await this.providerKeyService.selectNextEligibleKey(
+          tenantId,
+          provider,
+          authType,
+          currentKey.id,
+          agentId,
+        );
+        if (!next) {
+          lastErrorBody = await forward.response.text();
+          break;
+        }
+        currentKey = next;
+        currentTenantProviderId = next.id === SYNTHETIC_OLLAMA_PROVIDER_ID ? null : next.id;
+        currentProviderRegion = next.region;
+        if (!currentProviderKeyLabel && authType === 'subscription') {
+          currentProviderKeyLabel = next.label;
+        }
+        // Stash the error body from this attempt for the failure record.
+        lastErrorBody = await forward.response.text();
       }
-      let rawApiKey = apiKey;
-      if (authType === 'subscription' && isRefreshableOAuthCredential(apiKey)) {
-        // Deliberate re-read: resolveApiKey may have refreshed + persisted a
-        // rotated OAuth blob (which also invalidates the key cache), so the
-        // freshest stored value is fetched for the 401-retry path.
-        rawApiKey =
-          (await this.providerKeyService.getProviderApiKey(
-            tenantId,
-            provider,
-            authType,
-            providerKeyLabel,
-            agentId,
-          )) ?? apiKey;
-      }
-      const providerRegion = key.region;
 
-      this.logger.log(
-        `Fallback ${i}: trying model=${model} provider=${provider} auth_type=${authType} (primary=${primaryModel})`,
-      );
-
-      const forward = await this.tryForwardToProvider({
-        provider,
-        apiKey: resolvedCredentials.apiKey,
-        model,
-        body,
-        chatBody,
-        stream,
-        sessionKey,
-        signal,
-        agentId,
-        tenantId,
-        rawApiKey,
-        providerKeyLabel,
-        authType,
-        apiMode,
-        resourceUrl: resolvedCredentials.resourceUrl,
-        providerRegion,
-        signatureLookup,
-        thinkingLookup,
-        reasoningContentLookup,
-        paramMergeContext,
-      });
-
-      if (forward.response.ok) {
-        return {
-          success: {
-            forward,
-            model,
-            provider,
-            fallbackIndex: i,
-            authType,
-            // Label of the connection row that served the attempt — stamped
-            // alongside its tenant_provider_id so the pair always matches.
-            // Synthetic rows (Ollama) keep the pinned label, if any.
-            keyLabel: tenantProviderId ? key.label : providerKeyLabel,
-            tenantProviderId,
-          },
-          failures,
-        };
-      }
-
-      const errorBody = await forward.response.text();
+      // Out of in-request rotation (or the only key failed): record the
+      // last failure and move to the next model fallback if any.
+      const errorBody = lastErrorBody ?? (forward ? await forward.response.text() : '');
       failures.push({
         model,
         provider,
         fallbackIndex: i,
-        status: forward.response.status,
+        status: forward?.response.status ?? 0,
         errorBody,
         authType,
-        tenantProviderId,
+        tenantProviderId: currentTenantProviderId,
       });
 
       const existing = failedAuthByProvider.get(provider.toLowerCase());
@@ -360,7 +429,7 @@ export class ProxyFallbackService {
       updated.add(authType);
       failedAuthByProvider.set(provider.toLowerCase(), updated);
 
-      if (!shouldTriggerFallback(forward.response.status)) break;
+      if (!forward || !shouldTriggerFallback(forward.response.status)) break;
     }
     return { success: null, failures };
   }
@@ -371,11 +440,12 @@ export class ProxyFallbackService {
       return this.buildRateLimitCooldownForward(opts, cooldown);
     }
 
+    let result: ForwardResult;
     try {
       const forward = await this.forwardToProvider(opts);
-      const result = await this.retryOAuthSubscriptionAfterRejectedToken(opts, forward);
-      this.recordRateLimitCooldown(opts, result.response);
-      return result;
+      const resolved = await this.retryOAuthSubscriptionAfterRejectedToken(opts, forward);
+      this.recordRateLimitCooldown(opts, resolved.response);
+      result = resolved;
     } catch (error) {
       if (opts.signal?.aborted) throw error;
       if (!isTransportError(error)) throw error;
@@ -386,13 +456,28 @@ export class ProxyFallbackService {
         `Provider transport failure: provider=${opts.provider} model=${opts.model} status=${failureResponse.status} message=${message}`,
       );
 
-      return {
+      result = {
         response: failureResponse,
         isGoogle: false,
         isAnthropic: false,
         isChatGpt: false,
       };
     }
+
+    // Per-key cooldown bookkeeping. Fire-and-forget: the user already has
+    // their answer (good or bad) in `result.response`, and the next
+    // `selectProviderKey` call picks up the new state on the way through.
+    // Logging inside KeyHealthService carries the audit trail.
+    if (opts.tenantProviderId) {
+      const status = result.response.status;
+      if (result.response.ok) {
+        void this.keyHealth.recordSuccess(opts.tenantProviderId).catch(() => undefined);
+      } else {
+        void this.keyHealth.recordFailure(opts.tenantProviderId, status).catch(() => undefined);
+      }
+    }
+
+    return result;
   }
 
   private getActiveRateLimitCooldown(opts: ForwardProviderOptions): number | null {

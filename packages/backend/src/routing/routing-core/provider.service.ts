@@ -34,7 +34,10 @@ import {
   SubscriptionEndpointRegionConfig,
 } from '../subscription-region';
 
-const MAX_KEYS_PER_PROVIDER = 5;
+// 20 keys per provider is enough to cover the most aggressive per-key rate
+// limits we have observed (e.g. AeroLink's $10 / 4h cap) without crowding
+// the Connect modal. Keep this in sync with the frontend `MAX_KEYS_PER_PROVIDER`.
+const MAX_KEYS_PER_PROVIDER = 20;
 const MAX_LABEL_LENGTH = 50;
 const DEFAULT_LABEL = 'Default';
 

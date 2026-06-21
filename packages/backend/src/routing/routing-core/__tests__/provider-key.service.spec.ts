@@ -47,6 +47,10 @@ describe('ProviderKeyService', () => {
       setProviderKeys: jest.fn(),
     };
     providerService = { getProviders: jest.fn().mockResolvedValue([]) };
+    const keyHealth = {
+      isKeyCoolingDown: (row: { cooldown_until?: string | null }, now: Date = new Date()) =>
+        !!row.cooldown_until && new Date(row.cooldown_until).getTime() > now.getTime(),
+    };
 
     svc = new ProviderKeyService(
       providerRepo as unknown as Repository<TenantProvider>,
@@ -54,6 +58,7 @@ describe('ProviderKeyService', () => {
       discoveryService as unknown as ModelDiscoveryService,
       routingCache as unknown as RoutingCacheService,
       providerService as unknown as ProviderService,
+      keyHealth as never,
     );
   });
 

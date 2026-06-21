@@ -60,7 +60,7 @@ vi.mock('../../src/components/ProviderKeyForm.js', () => ({
       data-validation-error={props.validationError() ?? ''}
     />
   ),
-  MAX_KEYS_PER_PROVIDER: 5,
+  MAX_KEYS_PER_PROVIDER: 20,
 }));
 
 vi.mock('../../src/components/OAuthDetailView.js', () => ({
@@ -396,6 +396,62 @@ describe('ProviderDetailView', () => {
     const props = createTestProps({ provId: 'anthropic' });
     render(() => <ProviderDetailView {...props} />);
     expect(screen.getByTestId('provider-key-form')).toBeDefined();
+  });
+
+  describe('connected lookup with multi-key chain', () => {
+    const aeroProviders: RoutingProvider[] = [
+      {
+        // First DB row happens to be the disabled one — without the
+        // getProviderByAuth fix, `find` returns this row and
+        // `isConnectedApiKey` flips back to false, hiding the active
+        // key behind a "first time connect" form.
+        id: 'p-disabled',
+        provider: 'aerolink',
+        auth_type: 'api_key',
+        is_active: false,
+        has_api_key: true,
+        label: 'Disabled',
+        priority: 0,
+        key_prefix: 'aero_live_disabled',
+        connected_at: '2025-01-01',
+        cooldown_until: null,
+        consecutive_failures: 0,
+        last_failure_at: null,
+        models_fetched_at: null,
+        cached_model_count: 0,
+      },
+      {
+        id: 'p-active',
+        provider: 'aerolink',
+        auth_type: 'api_key',
+        is_active: true,
+        has_api_key: true,
+        label: 'Default',
+        priority: 1,
+        key_prefix: 'aero_live_47V',
+        connected_at: '2025-01-01',
+        cooldown_until: null,
+        consecutive_failures: 0,
+        last_failure_at: null,
+        models_fetched_at: null,
+        cached_model_count: 0,
+      },
+    ];
+
+    it('reports connected when any row is active even if the first row is disabled', () => {
+      const props = createTestProps({ provId: 'aerolink', providers: aeroProviders });
+      render(() => <ProviderDetailView {...props} />);
+      const form = screen.getByTestId('provider-key-form');
+      expect(form.getAttribute('data-connected')).toBe('true');
+    });
+
+    it('reports disconnected when every row is disabled', () => {
+      const allDisabled = aeroProviders.map((p) => ({ ...p, is_active: false }));
+      const props = createTestProps({ provId: 'aerolink', providers: allDisabled });
+      render(() => <ProviderDetailView {...props} />);
+      const form = screen.getByTestId('provider-key-form');
+      expect(form.getAttribute('data-connected')).toBe('false');
+    });
   });
 
   describe('per-provider refresh button', () => {

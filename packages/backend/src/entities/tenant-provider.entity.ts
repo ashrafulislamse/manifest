@@ -53,4 +53,19 @@ export class TenantProvider {
 
   @Column(timestampType(), { nullable: true, default: null })
   models_fetched_at!: string | null;
+
+  /** Timestamp of the most recent upstream failure for this key. NULL = no failure observed. */
+  @Column(timestampType(), { nullable: true, default: null })
+  last_failure_at!: string | null;
+
+  /** Consecutive upstream failure count. Reset to 0 on a successful forward. */
+  @Column('integer', { default: 0 })
+  consecutive_failures!: number;
+
+  /**
+   * Until when this key is excluded from `selectProviderKey`. NULL = immediately
+   * eligible. Backed by `idx_tenant_providers_cooldown_until` for cheap filters.
+   */
+  @Column(timestampType(), { nullable: true, default: null })
+  cooldown_until!: string | null;
 }

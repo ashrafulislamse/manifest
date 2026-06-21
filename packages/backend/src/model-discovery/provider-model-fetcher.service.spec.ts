@@ -2196,14 +2196,44 @@ describe('ProviderModelFetcherService', () => {
           displayName: 'claude-opus-4-8',
           provider: 'aerolink',
           contextWindow: 200_000,
-          inputPricePerToken: null,
-          outputPricePerToken: null,
+          // Live endpoint omits pricing — the parser fills these in from the
+          // docs-pinned `AEROLINK_PRICES` map (5 / 1_000_000 = 5e-6,
+          // 25 / 1_000_000 = 2.5e-5).
+          inputPricePerToken: 5 / 1_000_000,
+          outputPricePerToken: 25 / 1_000_000,
           capabilityCode: true,
           capabilityReasoning: false,
           qualityScore: 3,
           supportedEndpoints: ['anthropic'],
         }),
       );
+    });
+
+    it('leaves pricing null for AeroLink models the docs map does not cover', async () => {
+      // A model id that the live endpoint returns but the docs haven't
+      // catalogued yet — the parser must surface it (so users see the
+      // model exists) but with null prices so the price column shows "—"
+      // instead of misleadingly displaying $0.00.
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              id: 'aerolink-experimental-1',
+              supported_endpoint_types: ['anthropic'],
+            },
+          ],
+        }),
+      } as Response);
+      const result = await service.fetch('aerolink', 'sk-aerolink-test');
+      expect(result).toEqual([
+        expect.objectContaining({
+          id: 'aerolink-experimental-1',
+          provider: 'aerolink',
+          inputPricePerToken: null,
+          outputPricePerToken: null,
+        }),
+      ]);
     });
 
     it('falls back to the hand-curated catalog when /v1/models returns 401', async () => {

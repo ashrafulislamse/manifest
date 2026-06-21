@@ -5,6 +5,7 @@ import {
   createEffect,
   createSignal,
   on,
+  onCleanup,
   onMount,
   type Component,
   type Accessor,
@@ -27,7 +28,38 @@ import {
 import { suggestNextProviderKeyLabel } from '../services/provider-key-labels.js';
 import { toast } from '../services/toast-store.js';
 
-export const MAX_KEYS_PER_PROVIDER = 5;
+/**
+ * Returns true when the row's `cooldown_until` is in the future. Pure
+ * function — no reactivity — so callers should keep `now` derived from a
+ * signal so the UI re-renders as time passes.
+ */
+function isCoolingDown(row: RoutingProvider, now: number = Date.now()): boolean {
+  if (!row.cooldown_until) return false;
+  const t = Date.parse(row.cooldown_until);
+  return Number.isFinite(t) && t > now;
+}
+
+/**
+ * Renders a short, human-friendly countdown for a cooldown timestamp:
+ * "cools down in 4m 12s", "cools down in 47s", or "" when the time has
+ * already passed. Returns "" when the timestamp is missing/garbage.
+ */
+function formatCooldownRemaining(iso: string, now: number = Date.now()): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const diffMs = t - now;
+  if (diffMs <= 0) return '';
+  const totalSeconds = Math.ceil(diffMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMins = minutes % 60;
+  return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+}
+
+export const MAX_KEYS_PER_PROVIDER = 20;
 const MAX_LABEL_LENGTH = 50;
 
 export interface ProviderKeyFormProps {
@@ -366,6 +398,36 @@ const ProviderKeyForm: Component<ProviderKeyFormProps> = (props) => {
                 </Show>
               </button>
             </div>
+            <Show when={activeKeys()[0] && isCoolingDown(activeKeys()[0]!, Date.now())}>
+              <div
+                class="provider-detail__cooldown-hint"
+                style="margin-top: 8px; font-size: var(--font-size-xs); color: hsl(var(--destructive)); display: flex; align-items: center; gap: 6px;"
+                title="Manifest is rotating around this key after recent upstream failures."
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                  <line x1="12" y1="9" x2="12" y2="13" />
+                  <line x1="12" y1="17" x2="12.01" y2="17" />
+                </svg>
+                <Show
+                  when={activeKeys()[0]?.cooldown_until}
+                  fallback={<>This key is in cooldown after recent failures.</>}
+                >
+                  This key will be retried in{' '}
+                  {formatCooldownRemaining(activeKeys()[0]!.cooldown_until!, Date.now())}.
+                </Show>
+              </div>
+            </Show>
             <Show when={supportsMultiKey() && activeKeys().length < MAX_KEYS_PER_PROVIDER}>
               <AddAnotherKeyAction
                 onAdd={(label, apiKey, region) => handleAddKey(props, label, apiKey, region)}
@@ -532,7 +594,12 @@ export const AddAnotherKeyAction: Component<AddAnotherKeyActionProps> = (props) 
   createEffect(
     on(isOpen, (open, prevOpen) => {
       if (open && !label().trim()) {
-        setLabel(defaultLabel());
+        // Don't prefill the input value — that caused users to accept the
+        // auto-suggested "Key 2" / "Key 3" placeholder as the actual label
+        // even when they intended to type their own name. Render the
+        // suggestion as a placeholder (greyed hint) instead so the first
+        // keystroke lands in an empty field and naturally overwrites it.
+        setLabel('');
       }
       const defaultEndpointRegion = props.endpointRegions?.[0]?.value;
       if (open && defaultEndpointRegion && !endpointRegion()) {
@@ -564,7 +631,12 @@ export const AddAnotherKeyAction: Component<AddAnotherKeyActionProps> = (props) 
             class="provider-detail__add-link"
             style="margin-top: 12px; background: none; border: none; padding: 0; color: hsl(var(--muted-foreground)); font-size: var(--font-size-sm); cursor: pointer; text-align: left;"
             onClick={() => {
-              setLabel(defaultLabel());
+              // Open the form with an empty label so the placeholder
+              // ("Key 2" / "Key 3" …) acts as a hint rather than a
+              // pre-filled value. Pre-filling caused users to accept
+              // "Key 2" / "Key 3" as the actual name even when they
+              // intended to type their own.
+              setLabel('');
               setIsOpen(true);
             }}
           >
@@ -698,6 +770,14 @@ const KeyChainView: Component<KeyChainViewProps> = (props) => {
     setRenameValue(k.label);
   };
 
+  // `now` ticks every 1s so countdown labels stay live without forcing
+  // every keyed row to re-render on a global timer.
+  const [now, setNow] = createSignal(Date.now());
+  createEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1_000);
+    onCleanup(() => clearInterval(interval));
+  });
+
   const commitRename = async (k: RoutingProvider) => {
     const newLabel = renameValue().trim();
     if (!newLabel || newLabel === k.label) {
@@ -733,8 +813,41 @@ const KeyChainView: Component<KeyChainViewProps> = (props) => {
                 fallback={
                   <>
                     <div style="flex: 1; min-width: 0;">
-                      <div style="font-weight: 500; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                        {k.label}
+                      <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-weight: 500; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                          {k.label}
+                        </span>
+                        <Show when={isCoolingDown(k, now())}>
+                          <span
+                            class="provider-detail__cooldown-badge"
+                            title={`This key is cooling down — Manifest will skip it for the next ${
+                              k.cooldown_until
+                                ? formatCooldownRemaining(k.cooldown_until, now())
+                                : ''
+                            } before retrying.`}
+                            style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 6px; border-radius: 4px; background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive));"
+                          >
+                            <svg
+                              width="11"
+                              height="11"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="2.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                              aria-hidden="true"
+                            >
+                              <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                              <line x1="12" y1="9" x2="12" y2="13" />
+                              <line x1="12" y1="17" x2="12.01" y2="17" />
+                            </svg>
+                            cools down
+                            <Show when={k.cooldown_until}>
+                              <span> in {formatCooldownRemaining(k.cooldown_until!, now())}</span>
+                            </Show>
+                          </span>
+                        </Show>
                       </div>
                       <div style="font-size: var(--font-size-xs); color: hsl(var(--muted-foreground));">
                         {[

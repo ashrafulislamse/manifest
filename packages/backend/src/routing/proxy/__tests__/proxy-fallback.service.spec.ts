@@ -2,6 +2,7 @@ import { Repository } from 'typeorm';
 import { ProxyFallbackService, normalizeProviderModel } from '../proxy-fallback.service';
 import { resolveApiKey } from '../oauth-credentials';
 import { ProviderKeyService } from '../../routing-core/provider-key.service';
+import { KeyHealthService } from '../../routing-core/key-health.service';
 import { CustomProvider } from '../../../entities/custom-provider.entity';
 import { OpenaiOauthService } from '../../oauth/openai/openai-oauth.service';
 import { MinimaxOauthService } from '../../oauth/minimax/minimax-oauth.service';
@@ -39,6 +40,7 @@ const specCatalog: ProviderParamSpecCatalog = [
 describe('ProxyFallbackService', () => {
   let service: ProxyFallbackService;
   let providerKeyService: jest.Mocked<ProviderKeyService>;
+  let keyHealth: jest.Mocked<KeyHealthService>;
   let customProviderRepo: jest.Mocked<Repository<CustomProvider>>;
   let openaiOauth: jest.Mocked<OpenaiOauthService>;
   let minimaxOauth: jest.Mocked<MinimaxOauthService>;
@@ -106,11 +108,26 @@ describe('ProxyFallbackService', () => {
           };
         },
       ),
+      // In-request key rotation: by default the tests run a single key
+      // per route, so this is a no-op. Tests that exercise the rotation
+      // path override it.
+      selectNextEligibleKey: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<ProviderKeyService>;
 
     customProviderRepo = {
       findOne: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<Repository<CustomProvider>>;
+
+    // KeyHealthService is called fire-and-forget inside the proxy hot path.
+    // The mock matches the production behavior (resolves immediately) but
+    // exposes the call for tests that want to assert cooldown bookkeeping.
+    keyHealth = {
+      recordFailure: jest.fn().mockResolvedValue(undefined),
+      recordSuccess: jest.fn().mockResolvedValue(undefined),
+      reset: jest.fn().mockResolvedValue(undefined),
+      computeCooldownMs: jest.fn().mockReturnValue(60_000),
+      isKeyCoolingDown: jest.fn().mockReturnValue(false),
+    } as unknown as jest.Mocked<KeyHealthService>;
 
     openaiOauth = {
       unwrapToken: jest.fn().mockResolvedValue(null),
@@ -173,6 +190,7 @@ describe('ProxyFallbackService', () => {
 
     service = new ProxyFallbackService(
       providerKeyService,
+      keyHealth,
       customProviderRepo,
       openaiOauth,
       minimaxOauth,
@@ -1261,6 +1279,8 @@ describe('ProxyFallbackService', () => {
         region: null,
         label: 'Work',
         priority: 0,
+        cooldownUntil: null,
+        consecutiveFailures: 0,
       });
       providerKeyService.getProviderApiKey.mockResolvedValue(rawBlob);
       openaiOauth.unwrapToken.mockResolvedValue('fresh-access');
@@ -1399,6 +1419,8 @@ describe('ProxyFallbackService', () => {
         region: null,
         label: 'Work',
         priority: 0,
+        cooldownUntil: null,
+        consecutiveFailures: 0,
       });
       providerKeyService.getProviderApiKey.mockResolvedValue(rawBlob);
       pricingCache.getByModel.mockReturnValue({ provider: 'OpenAI' } as never);

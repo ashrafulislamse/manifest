@@ -89,6 +89,9 @@ export class ProviderController {
       connected_at: p.connected_at,
       models_fetched_at: p.models_fetched_at ?? null,
       cached_model_count: Array.isArray(p.cached_models) ? p.cached_models.length : 0,
+      cooldown_until: p.cooldown_until ?? null,
+      consecutive_failures: p.consecutive_failures ?? 0,
+      last_failure_at: p.last_failure_at ?? null,
     }));
   }
 
@@ -166,6 +169,8 @@ export class ProviderController {
       label: result.label,
       priority: result.priority,
       region: result.region ?? null,
+      cooldown_until: result.cooldown_until ?? null,
+      consecutive_failures: result.consecutive_failures ?? 0,
     };
   }
 

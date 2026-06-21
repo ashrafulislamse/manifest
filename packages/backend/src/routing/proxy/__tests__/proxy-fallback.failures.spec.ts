@@ -2,6 +2,7 @@ import { Repository } from 'typeorm';
 import type { ModelRoute } from 'manifest-shared';
 import { ProxyFallbackService } from '../proxy-fallback.service';
 import { ProviderKeyService } from '../../routing-core/provider-key.service';
+import { KeyHealthService } from '../../routing-core/key-health.service';
 import { CustomProvider } from '../../../entities/custom-provider.entity';
 import { OpenaiOauthService } from '../../oauth/openai/openai-oauth.service';
 import { MinimaxOauthService } from '../../oauth/minimax/minimax-oauth.service';
@@ -105,6 +106,10 @@ describe('ProxyFallbackService.tryFallbacks — failure chain by status code', (
           return { apiKey, id, region, label: label ?? 'Default', priority: 0 };
         },
       ),
+      // In-request key rotation: by default the tests run a single key
+      // per route, so this is a no-op. Tests that exercise the rotation
+      // path override it.
+      selectNextEligibleKey: jest.fn().mockResolvedValue(null),
     } as unknown as jest.Mocked<ProviderKeyService>;
 
     providerClient = {
@@ -117,8 +122,14 @@ describe('ProxyFallbackService.tryFallbacks — failure chain by status code', (
 
     const oauthStub = { unwrapToken: jest.fn().mockResolvedValue(null) };
 
+    const keyHealthStub = {
+      recordFailure: jest.fn().mockResolvedValue(undefined),
+      recordSuccess: jest.fn().mockResolvedValue(undefined),
+    };
+
     service = new ProxyFallbackService(
       providerKeyService,
+      keyHealthStub as unknown as KeyHealthService,
       customProviderRepo,
       oauthStub as unknown as OpenaiOauthService,
       oauthStub as unknown as MinimaxOauthService,

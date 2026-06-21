@@ -54,6 +54,8 @@ export class TenantProvidersController {
           models_fetched_at: string | null;
           cached_model_count: number;
           is_active: boolean;
+          cooldown_until: string | null;
+          consecutive_failures: number;
         }>;
         total_models: number;
       }
@@ -74,6 +76,8 @@ export class TenantProvidersController {
           models_fetched_at: p.models_fetched_at,
           cached_model_count: modelCount,
           is_active: p.is_active,
+          cooldown_until: p.cooldown_until ?? null,
+          consecutive_failures: p.consecutive_failures ?? 0,
         });
         existing.total_models = Math.max(existing.total_models, modelCount);
       } else {
@@ -90,6 +94,8 @@ export class TenantProvidersController {
               models_fetched_at: p.models_fetched_at,
               cached_model_count: modelCount,
               is_active: p.is_active,
+              cooldown_until: p.cooldown_until ?? null,
+              consecutive_failures: p.consecutive_failures ?? 0,
             },
           ],
           total_models: modelCount,

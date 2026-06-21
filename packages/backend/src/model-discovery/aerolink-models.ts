@@ -41,8 +41,13 @@ interface AeroLinkModelPrice {
  * every model — AeroLink does not publish its own quality ranking, and
  * the auto-tier-assigner uses this only as a hint when multiple models
  * are in the same price band.
+ *
+ * Exported (not private) so the live `/v1/models` parser can fill in
+ * per-token prices for models the live response returns — the live
+ * endpoint omits pricing, so the docs map is the only authoritative
+ * source.
  */
-const AEROLINK_PRICES: Readonly<Record<string, AeroLinkModelPrice>> = {
+export const AEROLINK_PRICES: Readonly<Record<string, AeroLinkModelPrice>> = {
   'claude-opus-4-8': { input: 5, output: 25 },
   'claude-opus-4-7': { input: 5, output: 25 },
   'claude-fable-5': { input: 10, output: 50 },

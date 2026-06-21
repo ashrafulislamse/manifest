@@ -28,6 +28,14 @@ export interface RoutingProvider {
   connected_at: string;
   models_fetched_at?: string | null;
   cached_model_count?: number;
+  /**
+   * When the key is in a per-key cooldown window (rate-limit-aware rotation).
+   * ISO timestamp; null when the key is currently eligible. Surfaced as a
+   * warning icon + expiry time in the Connect modal.
+   */
+  cooldown_until?: string | null;
+  consecutive_failures?: number;
+  last_failure_at?: string | null;
 }
 
 /* -- Routing: Status -- */

@@ -8,6 +8,7 @@ import { ModelPricingCacheService } from '../../model-prices/model-pricing-cache
 import { ModelDiscoveryService } from '../../model-discovery/model-discovery.service';
 import { CachedProviderKey, RoutingCacheService } from './routing-cache.service';
 import { ProviderService } from './provider.service';
+import { KeyHealthService } from './key-health.service';
 import { decrypt, getEncryptionSecret } from '../../common/utils/crypto.util';
 import {
   expandProviderNames,
@@ -34,6 +35,7 @@ export class ProviderKeyService {
     private readonly discoveryService: ModelDiscoveryService,
     private readonly routingCache: RoutingCacheService,
     private readonly providerService: ProviderService,
+    private readonly keyHealth: KeyHealthService,
     @Optional()
     @InjectRepository(AgentEnabledProvider)
     private readonly enabledProviderRepo: Repository<AgentEnabledProvider> | null = null,
@@ -59,6 +61,8 @@ export class ProviderKeyService {
           priority: 0,
           apiKey: '',
           region: null,
+          cooldownUntil: null,
+          consecutiveFailures: 0,
         },
       ];
     }
@@ -92,6 +96,14 @@ export class ProviderKeyService {
    * thin projections of this — callers that also need the `tenant_providers` row
    * id (e.g. the proxy, to stamp `agent_messages.tenant_provider_id`) call it
    * directly so the id selected and the key forwarded can never diverge.
+   *
+   * Rotation: keys whose `cooldown_until` is in the future are skipped. When
+   * the explicitly-pinned label is itself cooling down, the caller has asked
+   * for that key by name — we honor the request rather than silently swapping
+   * in a different one, so a misconfigured pin still surfaces as an error.
+   * For the implicit (label-less) case, the lowest-priority *eligible* key
+   * wins, so a healthy Work key at priority 1 beats a failing Default key at
+   * priority 0.
    */
   async selectProviderKey(
     tenantId: string,
@@ -99,14 +111,78 @@ export class ProviderKeyService {
     authType?: AuthType,
     label?: string,
     agentId?: string,
+    now: Date = new Date(),
   ): Promise<CachedProviderKey | null> {
     const keys = await this.getProviderKeys(tenantId, provider, authType, agentId);
     if (keys.length === 0) return null;
     if (label) {
+      // Explicit pin: honor the user's choice even if that key is on cooldown.
+      // Swapping it silently would mask pin bugs (e.g. a routed label that no
+      // longer exists).
       const match = keys.find((k) => k.label.toLowerCase() === label.toLowerCase());
       if (match) return match;
     }
+    // No label: pick the lowest-priority eligible key. The DB orders keys by
+    // priority ASC, so the first non-cooling entry is the best choice.
+    for (const key of keys) {
+      if (!this.keyHealth.isKeyCoolingDown(this.toCooldownRow(key), now)) {
+        return key;
+      }
+    }
+    // Every key is cooling down — return the highest-priority one anyway so
+    // the caller can surface a real upstream error instead of a synthetic
+    // "no key" message.
     return keys[0];
+  }
+
+  /**
+   * Re-hydrates a `CachedProviderKey` back into a row shape that
+   * `isKeyCoolingDown` can read. Only the cooldown-related fields matter;
+   * everything else is unused by the helper.
+   */
+  private toCooldownRow(key: CachedProviderKey): TenantProvider {
+    return {
+      cooldown_until: key.cooldownUntil,
+    } as unknown as TenantProvider;
+  }
+
+  /**
+   * Picks the next eligible key **after** a given one in the priority
+   * chain. Used by the proxy's in-request rotation path: when the current
+   * key fails with a trigger status, the fallback loop calls this with the
+   * failed key's id to skip to the next healthy key without leaving the
+   * request.
+   *
+   * Semantics:
+   * - Returns the next key in priority order whose `cooldown_until` is
+   *   not in the future.
+   * - Skips the just-failed key (so the caller can't accidentally re-pick
+   *   it before `recordFailure` has had a chance to mark it cooling down).
+   * - Returns `null` when no further key is available.
+   *
+   * Note: this deliberately doesn't account for the (rare) race where a
+   * stale cache snapshot still reports `cooldownUntil: null` for a key
+   * the proxy already failed. The fallback loop calls
+   * `KeyHealthService.recordFailure` synchronously and invalidates the
+   * cache before asking for the next key, so the cache is always
+   * up-to-date by the time we re-read it.
+   */
+  async selectNextEligibleKey(
+    tenantId: string,
+    provider: string,
+    authType: AuthType | undefined,
+    excludeKeyId: string,
+    agentId?: string,
+    now: Date = new Date(),
+  ): Promise<CachedProviderKey | null> {
+    const keys = await this.getProviderKeys(tenantId, provider, authType, agentId);
+    if (keys.length === 0) return null;
+    for (const key of keys) {
+      if (key.id === excludeKeyId) continue;
+      if (this.keyHealth.isKeyCoolingDown(this.toCooldownRow(key), now)) continue;
+      return key;
+    }
+    return null;
   }
 
   async getProviderApiKey(
@@ -254,6 +330,8 @@ export class ProviderKeyService {
   }
 
   private decryptOne(record: TenantProvider): CachedProviderKey[] {
+    const cooldown = record.cooldown_until ?? null;
+    const failures = record.consecutive_failures ?? 0;
     if (!record.api_key_encrypted) {
       // Local providers (auth_type='local') legitimately have no key — surface
       // an empty string so callers treat the provider as "available". Other
@@ -267,6 +345,8 @@ export class ProviderKeyService {
             priority: record.priority,
             apiKey: '',
             region: record.region,
+            cooldownUntil: cooldown,
+            consecutiveFailures: failures,
           },
         ];
       }
@@ -279,6 +359,8 @@ export class ProviderKeyService {
             priority: record.priority,
             apiKey: '',
             region: record.region,
+            cooldownUntil: cooldown,
+            consecutiveFailures: failures,
           },
         ];
       }
@@ -292,6 +374,8 @@ export class ProviderKeyService {
           priority: record.priority,
           apiKey: decrypt(record.api_key_encrypted, getEncryptionSecret()),
           region: record.region,
+          cooldownUntil: cooldown,
+          consecutiveFailures: failures,
         },
       ];
     } catch {

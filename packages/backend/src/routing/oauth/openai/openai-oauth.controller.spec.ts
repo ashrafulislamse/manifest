@@ -6,6 +6,26 @@ import { ResolveAgentService } from '../../routing-core/resolve-agent.service';
 import { ProviderKeyService } from '../../routing-core/provider-key.service';
 import { ProviderService } from '../../routing-core/provider.service';
 import { Request, Response } from 'express';
+import type { CachedProviderKey } from '../../routing-core/routing-cache.service';
+
+// Builds a `CachedProviderKey`-shaped mock. The openai-oauth tests only care
+// about the OAuth blob / label / id fields; cooldown fields are always
+// "not cooling down" because no test in this file exercises the rotation
+// feature (that's covered in key-health.service.spec.ts).
+const providerKeyMock = (
+  id: string,
+  label: string,
+  apiKey: string,
+  priority = 0,
+): CachedProviderKey => ({
+  id,
+  label,
+  priority,
+  apiKey,
+  region: null,
+  cooldownUntil: null,
+  consecutiveFailures: 0,
+});
 
 describe('OpenaiOauthController', () => {
   let controller: OpenaiOauthController;
@@ -172,20 +192,17 @@ describe('OpenaiOauthController', () => {
     it('revokes every active OpenAI subscription key when no label is provided', async () => {
       resolveAgent.resolve.mockResolvedValue({ id: 'agent-id-1', tenant_id: 'tenant-1' } as never);
       providerKeyService.getProviderKeys.mockResolvedValue([
-        {
-          id: 'key-1',
-          label: 'Default',
-          priority: 0,
-          apiKey: JSON.stringify({ t: 'access-tok', r: 'refresh-tok', e: Date.now() + 3600000 }),
-          region: null,
-        },
-        {
-          id: 'key-2',
-          label: 'Key 2',
-          priority: 1,
-          apiKey: JSON.stringify({ t: 'access-2', r: 'refresh-2', e: Date.now() + 3600000 }),
-          region: null,
-        },
+        providerKeyMock(
+          'key-1',
+          'Default',
+          JSON.stringify({ t: 'access-tok', r: 'refresh-tok', e: Date.now() + 3600000 }),
+        ),
+        providerKeyMock(
+          'key-2',
+          'Key 2',
+          JSON.stringify({ t: 'access-2', r: 'refresh-2', e: Date.now() + 3600000 }),
+          1,
+        ),
       ]);
 
       const result = await controller.revoke('my-agent', undefined, {
@@ -215,20 +232,17 @@ describe('OpenaiOauthController', () => {
     it('revokes and removes only the labeled OpenAI subscription key', async () => {
       resolveAgent.resolve.mockResolvedValue({ id: 'agent-id-1', tenant_id: 'tenant-1' } as never);
       providerKeyService.getProviderKeys.mockResolvedValue([
-        {
-          id: 'key-1',
-          label: 'Default',
-          priority: 0,
-          apiKey: JSON.stringify({ t: 'access-tok', r: 'refresh-tok', e: Date.now() + 3600000 }),
-          region: null,
-        },
-        {
-          id: 'key-2',
-          label: 'Key 2',
-          priority: 1,
-          apiKey: JSON.stringify({ t: 'access-2', r: 'refresh-2', e: Date.now() + 3600000 }),
-          region: null,
-        },
+        providerKeyMock(
+          'key-1',
+          'Default',
+          JSON.stringify({ t: 'access-tok', r: 'refresh-tok', e: Date.now() + 3600000 }),
+        ),
+        providerKeyMock(
+          'key-2',
+          'Key 2',
+          JSON.stringify({ t: 'access-2', r: 'refresh-2', e: Date.now() + 3600000 }),
+          1,
+        ),
       ]);
 
       const result = await controller.revoke('my-agent', 'Key 2', {
@@ -288,7 +302,7 @@ describe('OpenaiOauthController', () => {
     it('returns ok when token blob is not valid JSON', async () => {
       resolveAgent.resolve.mockResolvedValue({ id: 'agent-id-1', tenant_id: 'tenant-1' } as never);
       providerKeyService.getProviderKeys.mockResolvedValue([
-        { id: 'key-1', label: 'Default', priority: 0, apiKey: 'not-json', region: null },
+        providerKeyMock('key-1', 'Default', 'not-json'),
       ]);
 
       const result = await controller.revoke('my-agent', undefined, {
